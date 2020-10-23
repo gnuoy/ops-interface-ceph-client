@@ -52,6 +52,13 @@ class CephClientRequires(Object):
         self.framework.observe(
             charm.on[relation_name].relation_changed,
             self.on_changed)
+        self.new_request = ch_ceph.CephBrokerRq()
+        relation = self.model.get_relation(self.relation_name)
+        if relation:
+            self.previous_request = self.get_previous_request_from_relation(
+                self.model.get_relation(self.relation_name))
+        else:
+            self.previous_request = ch_ceph.CephBrokerRq()
 
     def on_joined(self, event):
         relation = self.model.get_relation(self.relation_name)
@@ -157,7 +164,7 @@ class CephClientRequires(Object):
         logging.info("%s: %s", request_method, relations)
         if not relations:
             return
-        rq = self.get_existing_request()
+        rq = self.new_request
         logging.info("Adding %s request", request_method)
         getattr(rq, request_method)(**kwargs)
         logging.info("Storing request")
@@ -349,7 +356,7 @@ class CephClientRequires(Object):
         relations = self.framework.model.relations[self.name]
         if not relations:
             return
-        rq = self.get_existing_request()
+        rq = self.new_request
         rq.add_op({'op': 'set-key-permissions',
                    'permissions': permissions,
                    'client': client_name})
@@ -357,7 +364,7 @@ class CephClientRequires(Object):
         # ch_ceph.send_request_if_needed(rq, relation=self.name)
         self.send_request_if_needed(rq, relations)
 
-    def get_previous_request(self, relation):
+    def get_previous_request_from_relation(self, relation):
         """Get the previous request.
 
         :param relation: Relation to check for existing request.
@@ -390,7 +397,7 @@ class CephClientRequires(Object):
         requests = {}
         for relation in relations:
             complete = False
-            previous_request = self.get_previous_request(relation)
+            previous_request = self.previous_request
             if request == previous_request:
                 sent = True
                 complete = self.is_request_complete_for_relation(
@@ -477,10 +484,24 @@ class CephClientRequires(Object):
         :type relations: [ops.model.Relation, ...]
         """
         if self.is_request_sent(request, relations):
-            logging.debug('Request already sent, not sending new request')
+            logging.debug(
+                ('Request %s is a duplicate of the previous broker request %s.'
+                 ' Restoring previous broker request'),
+                request.request_id,
+                self.previous_request.request_id)
+            # The previous request was stored at the beggining. The ops of
+            # the new request match that of the old. But as the new request
+            # was constructed broker data may have been set on the relation
+            # during the construction of this request. This is because the
+            # interface has no explicit commit method. Every op request has
+            # in implicit send which updates the relation data. So make sure
+            # the relation data matches the data at the beggining so that a
+            # new request is not triggered.
+            request = self.previous_request
         else:
-            for relation in relations:
-                logging.debug(
-                    'Sending request %s',
-                    request.request_id)
-                relation.data[self.this_unit]['broker_req'] = request.request
+            logging.debug(
+                'Sending request %s',
+                request.request_id)
+
+        for relation in relations:
+            relation.data[self.this_unit]['broker_req'] = request.request
